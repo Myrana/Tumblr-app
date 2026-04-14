@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tumblr Submit Assistant</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+      label { display: block; margin-top: 1rem; font-weight: 600; }
+      input, textarea, select { width: 100%; box-sizing: border-box; padding: 0.6rem; margin-top: 0.4rem; }
+      textarea { min-height: 130px; }
+      .row { display: flex; gap: 1rem; }
+      .row > div { flex: 1; }
+      button { margin-top: 1rem; padding: 0.65rem 1rem; margin-right: 0.5rem; }
+      pre { background: #111; color: #0f0; padding: 0.8rem; overflow: auto; min-height: 140px; }
+    </style>
+  </head>
+  <body>
+    <h1>Tumblr Submit Assistant</h1>
+    <p>Fills and submits a Tumblr blog's <strong>Submit</strong> form with your image, link, template text, and checkbox requirements.</p>
+
+    <form id="submit-form">
+      <label for="profileId">Blog profile name (e.g. blog-url or nickname)</label>
+      <input id="profileId" name="profileId" type="text" placeholder="my-ad-blog" />
+
+      <label for="profileSelect">Load saved profile</label>
+      <select id="profileSelect" name="profileSelect">
+        <option value="">-- Select profile --</option>
+      </select>
+
+      <label for="submitUrl">Submit page URL</label>
+      <input id="submitUrl" name="submitUrl" type="url" required placeholder="https://example.tumblr.com/submit" />
+
+      <label for="imagePath">Image path on this machine (optional)</label>
+      <input id="imagePath" name="imagePath" type="text" placeholder="/absolute/path/to/banner.jpg" />
+
+      <label for="linkUrl">JCINK link URL</label>
+      <input id="linkUrl" name="linkUrl" type="url" required placeholder="https://yoursite.jcink.net/index.php?showtopic=..." />
+
+      <label for="templateText">Template text block</label>
+      <textarea id="templateText" name="templateText" required></textarea>
+
+      <label for="checkboxLabels">Required checkbox labels (comma-separated)</label>
+      <input id="checkboxLabels" name="checkboxLabels" type="text" placeholder="I agree, Mature content" />
+
+      <div class="row">
+        <div>
+          <label for="previewOnly">Preview only (no final submit)</label>
+          <input id="previewOnly" name="previewOnly" type="checkbox" checked />
+        </div>
+        <div>
+          <label for="headless">Run headless browser</label>
+          <input id="headless" name="headless" type="checkbox" checked />
+        </div>
+      </div>
+
+      <button type="button" id="saveProfile">Save profile</button>
+      <button type="submit">Run automation</button>
+    </form>
+
+    <h2>Run log</h2>
+    <pre id="output">Waiting…</pre>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
