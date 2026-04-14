@@ -1,0 +1,523 @@
+# Create folders
+New-Item -ItemType Directory -Force src, public, data, docs | Out-Null
+
+@'
+{
+  "name": "tumblr-submit-assistant",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js && node --check src/automation.js && node --check src/profileStore.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright": "^1.54.0"
+  }
+}
+'@ | Set-Content -Encoding UTF8 package.json
+
+@'
+PORT=3000
+'@ | Set-Content -Encoding UTF8 .env.example
+
+@'
+node_modules
+npm-debug.log
+.git
+.gitignore
+.DS_Store
+preview-*.png
+'@ | Set-Content -Encoding UTF8 .dockerignore
+
+@'
+FROM mcr.microsoft.com/playwright:v1.54.0-jammy
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+'@ | Set-Content -Encoding UTF8 Dockerfile
+
+@'
+[build]
+builder = "DOCKERFILE"
+
+deploy = ["npm", "start"]
+'@ | Set-Content -Encoding UTF8 railway.toml
+
+@'
+{}
+'@ | Set-Content -Encoding UTF8 data/profiles.json
+
+@'
+import { chromium } from "playwright";
+
+function parseCsvList(raw = "") {
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function checkRequiredBoxes(page, checkboxLabels) {
+  const checked = [];
+
+  for (const labelText of checkboxLabels) {
+    const label = page.getByLabel(labelText, { exact: false });
+    const count = await label.count();
+
+    if (count > 0) {
+      await label.first().check({ force: true });
+      checked.push(labelText);
+      continue;
+    }
+
+    const fallbackCheckbox = page.locator(`label:has-text("${labelText}") input[type="checkbox"]`);
+    if ((await fallbackCheckbox.count()) > 0) {
+      await fallbackCheckbox.first().check({ force: true });
+      checked.push(labelText);
+    }
+  }
+
+  return checked;
+}
+
+export async function submitTumblrPost(config) {
+  const {
+    submitUrl,
+    imagePath,
+    linkUrl,
+    templateText,
+    checkboxLabelsRaw,
+    headless,
+    timeoutMs,
+    previewOnly
+  } = config;
+
+  const checkboxLabels = parseCsvList(checkboxLabelsRaw);
+  const browser = await chromium.launch({ headless });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  const events = [];
+
+  try {
+    await page.goto(submitUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    events.push("Opened submit page");
+
+    const bodyContent = `${templateText}\n\n${linkUrl}`.trim();
+
+    const fileInput = page.locator('input[type="file"]');
+    if ((await fileInput.count()) > 0 && imagePath) {
+      await fileInput.first().setInputFiles(imagePath);
+      events.push("Attached image");
+    } else {
+      events.push("No file input found (or no image path provided)");
+    }
+
+    const editorCandidates = [
+      'textarea[name*="body" i]',
+      'textarea[name*="caption" i]',
+      'textarea',
+      '[contenteditable="true"]'
+    ];
+
+    let editorSet = false;
+    for (const selector of editorCandidates) {
+      const target = page.locator(selector);
+      if ((await target.count()) === 0) {
+        continue;
+      }
+
+      const first = target.first();
+      const tagName = await first.evaluate((node) => node.tagName.toLowerCase());
+      if (tagName === "textarea") {
+        await first.fill(bodyContent);
+      } else {
+        await first.click();
+        await page.keyboard.press("Control+A");
+        await page.keyboard.type(bodyContent);
+      }
+      editorSet = true;
+      events.push(`Filled post content via selector: ${selector}`);
+      break;
+    }
+
+    if (!editorSet) {
+      events.push("Warning: no post body editor detected");
+    }
+
+    const checked = await checkRequiredBoxes(page, checkboxLabels);
+    if (checked.length) {
+      events.push(`Checked boxes: ${checked.join(", ")}`);
+    }
+
+    if (previewOnly) {
+      const shot = `preview-${Date.now()}.png`;
+      await page.screenshot({ path: shot, fullPage: true });
+      events.push(`Preview only mode: screenshot saved to ${shot}`);
+      return { ok: true, events };
+    }
+
+    const submitButton = page
+      .getByRole("button", { name: /submit|post|send/i })
+      .first();
+
+    if ((await submitButton.count()) > 0) {
+      await submitButton.click();
+      events.push("Clicked submit button");
+    } else {
+      events.push("Warning: submit button not found automatically");
+      return { ok: false, events };
+    }
+
+    await page.waitForTimeout(1500);
+    return { ok: true, events };
+  } catch (error) {
+    events.push(`Error: ${error.message}`);
+    return { ok: false, events };
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+'@ | Set-Content -Encoding UTF8 src/automation.js
+
+@'
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_PATH = path.join(__dirname, "..", "data", "profiles.json");
+
+async function ensureStore() {
+  try {
+    await fs.access(DATA_PATH);
+  } catch {
+    await fs.mkdir(path.dirname(DATA_PATH), { recursive: true });
+    await fs.writeFile(DATA_PATH, JSON.stringify({}, null, 2));
+  }
+}
+
+async function readStore() {
+  await ensureStore();
+  const content = await fs.readFile(DATA_PATH, "utf8");
+  return JSON.parse(content || "{}");
+}
+
+async function writeStore(store) {
+  await fs.writeFile(DATA_PATH, JSON.stringify(store, null, 2));
+}
+
+export async function listProfiles() {
+  const store = await readStore();
+  return Object.entries(store).map(([id, value]) => ({ id, ...value }));
+}
+
+export async function saveProfile(profile) {
+  const store = await readStore();
+  const id = profile.id?.trim() || profile.submitUrl?.trim();
+
+  if (!id) {
+    throw new Error("Profile id (or submitUrl) is required");
+  }
+
+  store[id] = {
+    submitUrl: profile.submitUrl?.trim() || "",
+    checkboxLabels: profile.checkboxLabels?.trim() || "",
+    templateText: profile.templateText ?? "",
+    linkUrl: profile.linkUrl?.trim() || "",
+    imagePath: profile.imagePath?.trim() || ""
+  };
+
+  await writeStore(store);
+  return { id, ...store[id] };
+}
+'@ | Set-Content -Encoding UTF8 src/profileStore.js
+
+@'
+import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { submitTumblrPost } from "./automation.js";
+import { listProfiles, saveProfile } from "./profileStore.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = Number(process.env.PORT || 3000);
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, service: "tumblr-submit-assistant" });
+});
+
+app.get("/api/profiles", async (_req, res) => {
+  const profiles = await listProfiles();
+  res.status(200).json({ ok: true, profiles });
+});
+
+app.post("/api/profiles", async (req, res) => {
+  try {
+    const saved = await saveProfile(req.body ?? {});
+    res.status(200).json({ ok: true, profile: saved });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error.message });
+  }
+});
+
+app.post("/api/submit", async (req, res) => {
+  const {
+    submitUrl,
+    imagePath,
+    linkUrl,
+    templateText,
+    checkboxLabels,
+    previewOnly = true,
+    headless = true,
+    timeoutMs = 45000
+  } = req.body ?? {};
+
+  if (!submitUrl || !templateText || !linkUrl) {
+    res.status(400).json({
+      ok: false,
+      message: "submitUrl, templateText, and linkUrl are required"
+    });
+    return;
+  }
+
+  const result = await submitTumblrPost({
+    submitUrl,
+    imagePath,
+    linkUrl,
+    templateText,
+    checkboxLabelsRaw: checkboxLabels,
+    headless: Boolean(headless),
+    timeoutMs: Number(timeoutMs),
+    previewOnly: Boolean(previewOnly)
+  });
+
+  res.status(result.ok ? 200 : 500).json(result);
+});
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Tumblr Submit Assistant running on port ${port}`);
+});
+'@ | Set-Content -Encoding UTF8 src/server.js
+
+@'
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tumblr Submit Assistant</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+      label { display: block; margin-top: 1rem; font-weight: 600; }
+      input, textarea, select { width: 100%; box-sizing: border-box; padding: 0.6rem; margin-top: 0.4rem; }
+      textarea { min-height: 130px; }
+      .row { display: flex; gap: 1rem; }
+      .row > div { flex: 1; }
+      button { margin-top: 1rem; padding: 0.65rem 1rem; margin-right: 0.5rem; }
+      pre { background: #111; color: #0f0; padding: 0.8rem; overflow: auto; min-height: 140px; }
+    </style>
+  </head>
+  <body>
+    <h1>Tumblr Submit Assistant</h1>
+    <p>Fills and submits a Tumblr blog's <strong>Submit</strong> form with your image, link, template text, and checkbox requirements.</p>
+
+    <form id="submit-form">
+      <label for="profileId">Blog profile name (e.g. blog-url or nickname)</label>
+      <input id="profileId" name="profileId" type="text" placeholder="my-ad-blog" />
+
+      <label for="profileSelect">Load saved profile</label>
+      <select id="profileSelect" name="profileSelect">
+        <option value="">-- Select profile --</option>
+      </select>
+
+      <label for="submitUrl">Submit page URL</label>
+      <input id="submitUrl" name="submitUrl" type="url" required placeholder="https://example.tumblr.com/submit" />
+
+      <label for="imagePath">Image path on this machine (optional)</label>
+      <input id="imagePath" name="imagePath" type="text" placeholder="/absolute/path/to/banner.jpg" />
+
+      <label for="linkUrl">JCINK link URL</label>
+      <input id="linkUrl" name="linkUrl" type="url" required placeholder="https://yoursite.jcink.net/index.php?showtopic=..." />
+
+      <label for="templateText">Template text block</label>
+      <textarea id="templateText" name="templateText" required></textarea>
+
+      <label for="checkboxLabels">Required checkbox labels (comma-separated)</label>
+      <input id="checkboxLabels" name="checkboxLabels" type="text" placeholder="I agree, Mature content" />
+
+      <div class="row">
+        <div>
+          <label for="previewOnly">Preview only (no final submit)</label>
+          <input id="previewOnly" name="previewOnly" type="checkbox" checked />
+        </div>
+        <div>
+          <label for="headless">Run headless browser</label>
+          <input id="headless" name="headless" type="checkbox" checked />
+        </div>
+      </div>
+
+      <button type="button" id="saveProfile">Save profile</button>
+      <button type="submit">Run automation</button>
+    </form>
+
+    <h2>Run log</h2>
+    <pre id="output">Waiting…</pre>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+'@ | Set-Content -Encoding UTF8 public/index.html
+
+@'
+const form = document.getElementById("submit-form");
+const output = document.getElementById("output");
+const profileSelect = document.getElementById("profileSelect");
+const saveProfileBtn = document.getElementById("saveProfile");
+
+function setFormValues(values = {}) {
+  form.querySelector("#profileId").value = values.id || "";
+  form.querySelector("#submitUrl").value = values.submitUrl || "";
+  form.querySelector("#imagePath").value = values.imagePath || "";
+  form.querySelector("#linkUrl").value = values.linkUrl || "";
+  form.querySelector("#templateText").value = values.templateText || "";
+  form.querySelector("#checkboxLabels").value = values.checkboxLabels || "";
+}
+
+async function loadProfiles() {
+  const response = await fetch("/api/profiles");
+  const data = await response.json();
+  const profiles = data.profiles || [];
+
+  profileSelect.innerHTML = '<option value="">-- Select profile --</option>';
+
+  for (const profile of profiles) {
+    const opt = document.createElement("option");
+    opt.value = profile.id;
+    opt.textContent = `${profile.id} (${profile.submitUrl || "no url"})`;
+    opt.dataset.profile = JSON.stringify(profile);
+    profileSelect.appendChild(opt);
+  }
+}
+
+profileSelect.addEventListener("change", () => {
+  const selected = profileSelect.options[profileSelect.selectedIndex];
+  if (!selected?.dataset.profile) {
+    return;
+  }
+
+  const profile = JSON.parse(selected.dataset.profile);
+  setFormValues(profile);
+  output.textContent = `Loaded profile: ${profile.id}`;
+});
+
+saveProfileBtn.addEventListener("click", async () => {
+  const profile = {
+    id: form.querySelector("#profileId").value.trim(),
+    submitUrl: form.querySelector("#submitUrl").value,
+    imagePath: form.querySelector("#imagePath").value,
+    linkUrl: form.querySelector("#linkUrl").value,
+    templateText: form.querySelector("#templateText").value,
+    checkboxLabels: form.querySelector("#checkboxLabels").value
+  };
+
+  const response = await fetch("/api/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile)
+  });
+
+  const result = await response.json();
+  if (!result.ok) {
+    output.textContent = `Failed to save profile: ${result.message}`;
+    return;
+  }
+
+  await loadProfiles();
+  output.textContent = `Saved profile: ${result.profile.id}`;
+});
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const formData = new FormData(form);
+  const payload = {
+    submitUrl: formData.get("submitUrl"),
+    imagePath: formData.get("imagePath"),
+    linkUrl: formData.get("linkUrl"),
+    templateText: formData.get("templateText"),
+    checkboxLabels: formData.get("checkboxLabels"),
+    previewOnly: form.querySelector("#previewOnly").checked,
+    headless: form.querySelector("#headless").checked
+  };
+
+  output.textContent = "Running...";
+
+  const response = await fetch("/api/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  const result = await response.json();
+  const lines = [
+    `ok: ${result.ok}`,
+    ...(result.events || []),
+    result.message ? `message: ${result.message}` : ""
+  ].filter(Boolean);
+
+  output.textContent = lines.join("\n");
+});
+
+loadProfiles();
+'@ | Set-Content -Encoding UTF8 public/app.js
+
+@'
+# Tumblr Submission UI Feasibility (Admin Review Workflow)
+
+## Short answer
+Yes — this is possible for **submission-based** Tumblr blogs, where you send a post through the blog’s Submit page and admins review it.
+'@ | Set-Content -Encoding UTF8 docs/tumblr-posting-feasibility.md
+
+@'
+# Tumblr Submit Assistant
+
+A local web app that automates Tumblr **Submit page** workflows for admin-review blogs.
+
+## Features
+- Enter a Tumblr submit URL.
+- Provide a fixed template text block and jcink link.
+- Optionally upload an image from local disk.
+- Auto-check required checkboxes by label text.
+- Save per-blog profiles (URL, text, link, image path, and checkbox rules).
+- Run in **preview mode** (fills fields and captures screenshot without final submit).
+
+## Local install
+```bash
+npm install
+npx playwright install chromium
