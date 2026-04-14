@@ -1,41 +1,61 @@
-# Tumblr Posting UI Feasibility
+# Tumblr Submission UI Feasibility (Admin Review Workflow)
 
 ## Short answer
-Yes, building an application with a UI to automate this workflow is possible **if** your Tumblr account has permission to post to the target blog.
+Yes — this is possible for **submission-based** Tumblr blogs, where you send a post through the blog’s Submit page and admins review it.
 
-## Important permission constraint
-If the blog is not yours, your account must still have posting rights (for example, as a member/contributor with the right role). Without that permission, neither the Tumblr API nor browser automation can legitimately publish posts to that blog.
+## What changed based on your clarification
+You are not trying to publish directly as an admin.
+You are using a blog’s **Submit** form, and the admins approve/reject afterward.
 
-## Your requested workflow
-A tool can be designed to:
-1. Always select the **Photo** post type.
-2. Upload/select a predefined image.
-3. Add a hyperlink to your jcink site in the post body/caption.
-4. Insert a predetermined text block/template.
-5. Set required checkboxes/toggles before publishing.
+That means the app should automate the **submission flow** (not direct posting APIs tied to blog ownership).
 
-## Technical implementation options
+## How it works in your exact flow
+1. Open the target blog’s Submit page.
+2. Select the post type (you said always photo/image-based with a link and text).
+3. Upload the image.
+4. Insert your predefined text block.
+5. Insert your jcink link (in caption/body, depending on the form fields available).
+6. Set required checkboxes/toggles.
+7. Click Submit.
+8. Post enters admin review queue.
 
-### Option A: Official Tumblr API (preferred when possible)
-- Better stability and lower break risk.
-- Requires OAuth and sufficient blog permissions.
-- Limitation: some UI-only checkboxes/toggles may not map directly to API parameters.
+## Important constraints
+- The target blog must have submissions enabled.
+- The exact fields/checkboxes vary by blog theme/settings.
+- Some blogs may block links, require tags, or limit media types.
+- You still must comply with Tumblr and blog-specific anti-spam rules.
 
-### Option B: Browser automation (Playwright/Puppeteer/Selenium)
-- Can click the exact UI controls/checkboxes in Tumblr’s web editor.
-- Works for UI-specific behavior not exposed in the API.
-- More fragile because Tumblr UI changes can break selectors.
+## Best technical approach for submission pages
 
-## Recommended architecture
-- Desktop/web form where you enter (or pre-save): image path, target link, text template, tags, queue/publish mode.
-- Validation rules to force required fields and required checkbox states.
-- "Dry run" preview before posting.
-- Logging + retry behavior for failed posts.
+### Preferred: Browser automation (Playwright)
+For submit-page workflows, browser automation is usually the right fit because it interacts with the same controls you use manually.
 
-## Risk and compliance notes
-- Respect Tumblr Terms of Service and anti-spam rules.
-- Add rate limiting and human review if posting at scale.
-- Securely store credentials (never hardcode tokens/passwords).
+Why this fits your use case:
+- Can click the exact checkboxes required by the blog’s submit form.
+- Can upload images and fill body/caption text.
+- Can support per-blog field mappings if forms differ.
 
-## Practical conclusion
-This is feasible, but success depends on account authorization on the target blog and whether the required checkbox behavior is API-accessible or requires browser automation.
+## Practical app design (recommended)
+Build a small desktop/web UI where you configure:
+- Submit URL (for each Tumblr blog).
+- Image file path (or drag/drop image).
+- Template text block.
+- Link URL (jcink ad thread/site link).
+- Checkbox rules (which labels must be checked).
+- Optional tags and scheduling for batched submissions.
+
+Then on submit, the tool runs automation steps against that specific submit page.
+
+## Reliability strategy
+- Use saved selectors per blog (because forms differ).
+- Add a “preview mode” that fills everything but waits for manual final click.
+- Add retries for transient failures (timeouts, upload delays).
+- Keep logs/screenshots for failed submissions.
+
+## Compliance/safety notes
+- Do not bypass captchas/anti-bot protections.
+- Keep submission rates low and human-like.
+- Store any credentials securely if login is required.
+
+## Bottom line
+Given your “submit for admin review” workflow: **yes, this is feasible**, and browser automation is the most practical method.
